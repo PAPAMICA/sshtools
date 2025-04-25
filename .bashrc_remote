@@ -1528,16 +1528,41 @@ checksec() {
     
     # Check for running services
     echo -e "\n${bold}Exposed Services:${reset}"
-    echo "Port     Protocol  State   Service"
+    echo "Port     Protocol  State   Service   Processus"
     echo "----------------------------------------"
     if command -v ss >/dev/null 2>&1; then
-        ss -tuln | grep LISTEN | awk '{
-            split($5, a, ":")
-            port = a[length(a)]
-            proto = $1
-            printf "%-8s %-9s %-7s ", port, proto, "LISTEN"
-            system("grep -w " port " /etc/services 2>/dev/null | head -1 | awk \"{print \\$1}\"")
-        }' | sort -n | column -t
+        ss -tulpn | awk '
+        {
+            if ($1 ~ /^(tcp|udp)$/ && $5 ~ /:[0-9]+$/) {
+                proto = tolower($1);
+                split($5, a, ":");
+                port = a[length(a)];
+                # Extract process name
+                proc = ($0 ~ /users:\(\(/) ? gensub(/^.*users:\(\(([^,]+),.*$/, "\\1", "g") : "-";
+                # Map by port
+                protocols[port][proto] = 1;
+                # Keep first process name we see
+                if (!(port in procs) && proc != "-") {
+                    procs[port] = proc;
+                }
+                ports[port] = 1;
+            }
+        }
+        END {
+            for (p in ports) {
+                used_proto = "";
+                if (protocols[p]["tcp"]) used_proto = "TCP";
+                if (protocols[p]["udp"]) used_proto = (used_proto ? used_proto "/UDP" : "UDP");
+                # Lookup service name
+                key_tcp = p "/tcp";
+                key_udp = p "/udp";
+                cmd = "awk \047$2 == \"" key_tcp "\" || $2 == \"" key_udp "\" { print $1; exit }\047 /etc/services";
+                cmd | getline service;
+                close(cmd);
+                if (service == "") service = "-";
+                printf "%-6s %-10s %-15s %s\n", p, used_proto, service, procs[p];
+            }
+        }' | sort -n
     else
         netstat -tuln | grep LISTEN | awk '{
             split($4, a, ":")
